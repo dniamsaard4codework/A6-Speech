@@ -1,8 +1,15 @@
 # Exercise 4 (voice cloning) extras — installed ON TOP of the main .venv (single env).
-# OpenVoice V2 + MeloTTS. We deliberately DROP faster-whisper / whisper-timestamped / PyAV /
-# gradio / tensorboard: the heavy se_extractor VAD path is replaced by a lightweight
-# chunk-and-average tone-color extractor (a6_speech.voice_clone.extract_se), so none of the
-# OpenVoice runtime code that we actually call needs them.
+# OpenVoice V2 + MeloTTS. We keep OpenVoice's real `se_extractor.get_se` (silero-VAD path),
+# so we install its front-end: faster-whisper + whisper-timestamped + PyAV, plus a
+# wheel-shipped ffmpeg via imageio-ffmpeg (no system ffmpeg / no compiling). whisper-timestamped
+# tries to pull numpy>=2; we re-pin numpy==1.26.4 afterwards (see scripts/setup.ps1) because
+# wav2vec2 (Ex3) + MeloTTS need numpy<2. gradio / tensorboard are still dropped (unused).
+
+# --- OpenVoice se_extractor.get_se front-end (Ex 4b) ---
+faster-whisper==1.2.1
+whisper-timestamped==1.15.9
+av==17.1.0
+imageio-ffmpeg==0.6.0
 
 # --- OpenVoice V2 converter runtime ---
 wavmark==0.0.3

@@ -8,11 +8,17 @@ re-extracted from each generated clip.
 
 Runs in the single project env (.venv, py3.10, torch 2.8 cu128) — on the **GPU**.
 
-Design note: instead of OpenVoice's `se_extractor.get_se` (which pulls faster-whisper /
-whisper-timestamped / PyAV — none of which build cleanly on this Windows machine and are
-unnecessary for a clean reference clip), we extract the tone color directly with the
-converter's own `ToneColorConverter.extract_se`, splitting the reference into ~10 s chunks
-and averaging — exactly what get_se does internally, minus the VAD/ASR front-end.
+Tone-color extraction: we use OpenVoice's own `se_extractor.get_se` (the silero-VAD path,
+`vad=True`) — the exact function the assignment asks us to "re-run on the outputs". On Windows
+its front-end needs `faster-whisper` + `whisper-timestamped` + PyAV + an `ffmpeg` binary; we
+satisfy the binary with the wheel-shipped `imageio-ffmpeg` (no system install, no compiling).
+`get_se` segments a clip by rounding `duration / 10 s` to an integer number of splits, so it
+*requires the clip to be ≳5 s*. The reference recording (~47 s) is fine; short synthesized
+outputs (a single "I got the job!" is ~2 s) are **tiled to ~8 s** first — repeating audio does
+not change timbre, so the tone color is identical — so the *real* get_se still runs on every
+output. If `get_se` is ever unavailable we fall back to a lightweight chunk-and-average via
+`ToneColorConverter.extract_se` — the same math get_se uses internally, minus the VAD/ASR
+front-end — so the pipeline never hard-stops.
 """
 from __future__ import annotations
 
@@ -139,8 +145,87 @@ def _resolve_spk_id(spk2id, candidates):
 
 
 # ---------------------------------------------------------------------------
-# Tone color extraction (chunk-and-average; replaces se_extractor.get_se)
+# Tone color extraction — OpenVoice se_extractor.get_se (primary) with a
+# chunk-and-average fallback for short clips / missing optional deps.
 # ---------------------------------------------------------------------------
+_FFMPEG_READY = False
+
+
+def _setup_ffmpeg():
+    """Expose a wheel-shipped ffmpeg as a plain `ffmpeg(.exe)` on PATH (whisper shells out to
+    it by that name) and point pydub at it. Lets se_extractor.get_se run without a system
+    ffmpeg install. No-op if imageio-ffmpeg isn't present."""
+    global _FFMPEG_READY
+    if _FFMPEG_READY:
+        return True
+    try:
+        import shutil
+        import imageio_ffmpeg
+        from pydub import AudioSegment
+
+        src = imageio_ffmpeg.get_ffmpeg_exe()
+        try:
+            repo_root = Path(__file__).resolve().parents[2]  # src/a6_speech/voice_clone.py
+        except NameError:  # __file__ undefined when this source is run from a notebook cell
+            repo_root = Path.cwd()
+        bindir = repo_root / ".venv" / "ffmpeg_bin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        exe = bindir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        if not exe.exists():
+            shutil.copy(src, exe)
+        os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
+        AudioSegment.converter = str(exe)
+        AudioSegment.ffmpeg = str(exe)
+        _FFMPEG_READY = True
+        return True
+    except Exception as e:  # imageio-ffmpeg not installed → caller falls back
+        print(f"  (ffmpeg setup skipped: {type(e).__name__}: {e})")
+        return False
+
+
+def _tile_to_min_duration(path, min_s=8.0):
+    """Repeat (tile) a clip until it is ≥ min_s seconds, written to a temp wav. Repeating audio
+    does not change its timbre, so the tone color is identical — it just gives OpenVoice's
+    se_extractor.get_se enough speech (it needs ≳5 s to form ≥1 VAD split) to run on a short
+    output like a single "I got the job!". Returns the original path if it is already long enough."""
+    import soundfile as sf
+    import librosa
+
+    y, sr = librosa.load(str(path), sr=None, mono=True)
+    if len(y) / sr >= min_s:
+        return str(path)
+    reps = int(np.ceil(min_s * sr / max(len(y), 1)))
+    y_tiled = np.tile(y, reps)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="tile_", dir=str(PROCESSED_DIR))) / (Path(path).stem + "_tiled.wav")
+    sf.write(str(tmp), y_tiled, sr)
+    return str(tmp)
+
+
+def get_se(path, converter, save_path=None):
+    """Extract a tone-color embedding using OpenVoice's real `se_extractor.get_se` (silero-VAD
+    path). Clips shorter than its ~5 s minimum (e.g. a single "I got the job!") are tiled to ~8 s
+    first — same timbre, just repeated — so the real get_se still runs on the output. Falls back
+    to a chunk-and-average extractor only if get_se is unavailable. Returns the SE tensor."""
+    if _setup_ffmpeg():
+        try:
+            import openvoice.se_extractor as se_extractor
+
+            src = _tile_to_min_duration(path, min_s=8.0)
+            tiled = src != str(path)
+            se, _name = se_extractor.get_se(
+                src, converter, target_dir=str(PROCESSED_DIR), vad=True)
+            if save_path is not None:
+                import torch
+                torch.save(se, str(save_path))
+            note = " (tiled to ≥8s)" if tiled else ""
+            print(f"  se_extractor.get_se ok ({Path(path).name}){note} -> {tuple(se.shape)}")
+            return se
+        except Exception as e:
+            print(f"  se_extractor.get_se fell back ({Path(path).name}): {type(e).__name__}: {e}")
+    return _extract_se_from_path(path, converter, save_path=save_path)
+
+
 def _extract_se_from_path(path, converter, chunk_s=10.0, save_path=None):
     import soundfile as sf
     import librosa
@@ -174,7 +259,7 @@ def extract_se(reference_path, converter=None, device="cuda", out_path=None):
     out_path = Path(out_path or (OUTPUT_DIR / "target_se.pth"))
     if converter is None:
         converter, _ = load_converter(device)
-    se = _extract_se_from_path(reference_path, converter, save_path=out_path)
+    se = get_se(reference_path, converter, save_path=out_path)
     print(f"Extracted tone color embedding: shape {tuple(se.shape)} -> saved {out_path}")
     print('This single vector now encodes "what you sound like" — independent of what you say.')
     return se
@@ -252,7 +337,7 @@ def audio_metrics(path, sr_target=22050):
 
 
 def cosine_to_reference(reference_se, clip_paths, converter, device="cuda"):
-    """Re-extract a tone-color embedding from each generated clip and compute cosine
+    """Re-run OpenVoice's `se_extractor.get_se` on each generated clip and compute cosine
     similarity to the reference embedding (Exercise 4b)."""
     import torch
     import torch.nn.functional as F
@@ -260,7 +345,7 @@ def cosine_to_reference(reference_se, clip_paths, converter, device="cuda"):
     ref = reference_se.flatten().float().cpu()
     sims = {}
     for name, path in clip_paths.items():
-        gen = _extract_se_from_path(path, converter).flatten().float().cpu()
+        gen = get_se(path, converter).flatten().float().cpu()
         sims[name] = round(F.cosine_similarity(ref.unsqueeze(0), gen.unsqueeze(0)).item(), 4)
         print(f"cos(reference, {name}) = {sims[name]}")
     return sims

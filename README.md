@@ -55,8 +55,12 @@ uv pip install --python .venv/Scripts/python.exe --no-deps -e third_party/OpenVo
 > **Why one env works:** OpenVoice/MeloTTS normally pin old deps, but their runtime only needs
 > `numpy<2` + a stable `transformers` (they use just `AutoTokenizer`/`AutoModelForMaskedLM`).
 > Pinning `numpy==1.26.4` + `transformers==4.46.3` satisfies both wav2vec2 (Ex3) and MeloTTS (Ex4).
-> The heavy `se_extractor` VAD/ASR front-end (faster-whisper/PyAV) is replaced by a lightweight
-> chunk-and-average tone-color extractor, so nothing needs to compile PyAV on Windows.
+> Exercise 4(b) uses OpenVoice's **real `se_extractor.get_se`** (the silero-VAD path); its
+> front-end (`faster-whisper` / `whisper-timestamped` / PyAV) installs from wheels, and the
+> `ffmpeg` binary it shells out to is supplied by `imageio-ffmpeg` — **no system ffmpeg, no
+> compiling** on Windows. (`whisper-timestamped` tries to pull `numpy>=2`, so setup re-pins
+> `numpy==1.26.4` last.) If `get_se` is ever unavailable, the code falls back to a
+> chunk-and-average extractor (`ToneColorConverter.extract_se`) so the pipeline never hard-stops.
 
 ## Commands used
 
@@ -71,7 +75,9 @@ python run.py --model wav2vec2-probe --dataset speechcommands --classes yes,no,s
 # Exercise 4 — voice cloning (place your ~10-30s clip at data/voice_clone/my_voice.wav first)
 python run.py --model voice-clone --extract-se --reference data/voice_clone/my_voice.wav
 python run.py --model voice-clone --accent us  --text "I got the job!" --generate
-python run.py --model voice-clone --accent all --text "I got the job!" --generate
+# --accent all runs the full Ex4 pipeline on the test sentence "I got the job!" (Ex4b
+# re-extracts tone color with the real se_extractor.get_se, tiling each ~2 s clip to ~8 s):
+python run.py --model voice-clone --accent all --generate
 python run.py --model voice-clone --language es --text "Hola, como estas?" --generate
 
 # Run the full notebook end-to-end
@@ -85,7 +91,7 @@ jupyter nbconvert --to notebook --execute A6_Speech_Processing.ipynb
 | Tokenization (Ex 1) | `SpeechTokenizer` | char tokens ≫ word tokens; accent = 1 token | see char-vs-word table below; accent IDs 36/37/38 |
 | CTC character error rate (Ex 2) | Toy BiLSTM + CTC | **CER < 10% by step 66** (→ ~3%) | error-rate-vs-step curve below |
 | wav2vec2 vs raw-feature probe (Ex 3) | Linear probe (4-way) | **89.6%** vs **68.8%** (random 25%) | wav2vec2 **+20.8 pts**; 6-way: 79.2% vs 51.4% |
-| Voice cloning: accent + cross-lingual (Ex 4) | OpenVoice V2 + MeloTTS | cosine sim **high & ~equal** across 4 accents | identity preserved while accent/language change |
+| Voice cloning: accent + cross-lingual (Ex 4) | OpenVoice V2 + MeloTTS | cosine sim **0.56–0.67, clustered (no collapse)** across 4 accents | identity preserved while accent/language change |
 
 **Exercise 1(a) — character vs token counts**
 
@@ -122,18 +128,26 @@ Both probes are trained for 150 epochs with **train/validation loss + accuracy l
 
 | Accent | Duration (s) | RMS Energy | Mel Spectral Centroid (Hz) | cos(reference, clip) |
 |---|---|---|---|---|
-| us | 1.846 | 0.0598 | 629.8 | 0.511 |
-| br | 1.324 | 0.0800 | 369.3 | 0.482 |
-| india | 1.800 | 0.0347 | 250.1 | 0.596 |
-| au | 1.730 | 0.0756 | 242.5 | 0.558 |
+| us | 1.846 | 0.0574 | 668.3 | 0.589 |
+| br | 1.324 | 0.0781 | 359.9 | 0.557 |
+| india | 1.800 | 0.0337 | 253.3 | 0.669 |
+| au | 1.730 | 0.0735 | 248.4 | 0.635 |
 
-The cosine similarities are clustered (~0.48–0.60) rather than collapsing for any one accent —
-evidence that OpenVoice keeps tone color (identity) roughly constant while only the accent/style
-changes (British is slightly lower, i.e. a little more style leakage into identity). Cross-lingual
-cloning (EN/ES/FR) reuses the *same* embedding.
+The cosine sims (extracted by re-running OpenVoice's own **`se_extractor.get_se`** on each
+generated clip) are **clustered (~0.56–0.67) with no collapse** for any one accent — the
+"roughly equal across all four accents" pattern that tone-color disentanglement predicts:
+OpenVoice holds identity (tone color) roughly constant while only the accent/style changes.
+British is lowest (0.557), i.e. a little more style leakage into identity. The values are
+moderate (not 0.9+) because each clip is only the short test sentence "I got the job!" (~2 s) —
+little speech from which to estimate timbre; a longer prompt pushes them to ~0.71–0.76.
+Cross-lingual cloning (EN/ES/FR) reuses the *same* embedding.
 
 > Numbers above are from the student's own reference clip at `data/voice_clone/my_voice.wav`
-> (~47 s). They are deterministic (MeloTTS synthesis is seeded), so the notebook and `run.py` agree.
+> (~47 s), synthesizing the assignment's test sentence "I got the job!". Each ~2 s output is
+> **tiled (repeated) to ~8 s** before extraction — repeating audio doesn't change timbre — so
+> the *real* `se_extractor.get_se` (which needs ≳5 s for its silero-VAD split) runs on every
+> output. MeloTTS synthesis is seeded; the `get_se` front-end has only minor jitter, so the
+> notebook and `run.py` agree to ~3 decimals.
 
 ## Exercise answers (every sub-question)
 
@@ -171,7 +185,7 @@ These are the written answers for every question in the assignment; the same tex
 
 **4(a)** — see the *4-accent metrics* table above (duration / RMS energy / mel spectral centroid for `us`, `br`, `india`, `au`), measured on clips cloned from the student's own 47-second recording.
 
-**4(b) — listening + cosine similarity.** Re-extracting a tone-color embedding from each generated clip and comparing it to the reference gives `us 0.511, br 0.482, india 0.596, au 0.558`. (The embedding is extracted with the converter's own `ref_enc` network — the same one OpenVoice's `se_extractor.get_se` uses internally — just with fixed-length chunking instead of the whisper/VAD front-end, so it is the equivalent of "re-run `se_extractor.get_se` on the outputs".) If OpenVoice's disentanglement works well these should be **high and roughly equal** across all four accents — because tone color is meant to capture *identity only*, independent of the accent applied on top. The observed values are clustered (~0.48–0.60) rather than collapsing for any one accent, confirming identity is held roughly constant while only the accent changes; British is slightly lower, i.e. a little style leakage into identity. (The same constancy is visible in the mel grid: the four spectrograms share overall structure but differ in fine timing/formants.)
+**4(b) — listening + cosine similarity.** Re-running OpenVoice's **own `se_extractor.get_se`** (the silero-VAD path) on each generated clip and comparing the resulting tone-color embedding to the reference gives `us 0.589, br 0.557, india 0.669, au 0.635`. If OpenVoice's disentanglement works well these should be **high and roughly equal** across all four accents — because tone color is meant to capture *identity only*, independent of the accent applied on top. The observed values are roughly equal and clustered (~0.56–0.67) rather than collapsing for any one accent, confirming identity is held roughly constant while only the accent changes; British is lowest (0.557), i.e. a little style leakage into identity. They sit in the moderate range rather than 0.9+ because each clip is only the ~2 s test sentence "I got the job!" — little unique speech to estimate timbre from (a longer prompt lifts them to ~0.71–0.76). (The same constancy is visible in the mel grid: the four spectrograms share overall structure but differ in fine timing/formants.) Implementation note: `get_se` segments a clip by rounding `duration/10 s` to an integer number of VAD splits, so it needs ≳5 s of speech; each ~2 s output is therefore **tiled (repeated) to ~8 s** — identical timbre — so the real `get_se` runs on every output.
 
 ## Visualizations
 
