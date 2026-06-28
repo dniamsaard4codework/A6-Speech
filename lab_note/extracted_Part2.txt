@@ -1,0 +1,72 @@
+
+================================================================================
+CELL 14 (CODE)
+================================================================================
+# ── Visualization: tokenization comparison ──────────────────────────────────
+
+fig, axes = plt.subplots(3, 1, figsize=(14, 8))
+sentence = "I got the job!"
+
+# --- NLP BPE tokenization ---
+nlp_tokens = ['I', 'got', 'the', 'job', '!']
+nlp_ids    = [40, 1392, 262, 1693, 0]
+ax = axes[0]
+colors = plt.cm.Set2(np.linspace(0, 1, len(nlp_tokens)))
+x = 0
+for tok, tid, col in zip(nlp_tokens, nlp_ids, colors):
+    w = len(tok) * 0.8 + 0.4
+    ax.barh(0, w, left=x, height=0.5, color=col, edgecolor='white', lw=2)
+    ax.text(x+w/2, 0, f'{tok}\n({tid})', ha='center', va='center', fontsize=10, fontweight='bold')
+    x += w
+ax.set_xlim(0, x+0.5); ax.set_ylim(-0.5, 0.6)
+ax.set_yticks([]); ax.set_xticks([])
+ax.set_title(f'[NLP] GPT BPE tokenizer: "{sentence}" → 5 tokens, variable width = variable meaning', fontsize=11)
+
+# --- Speech character tokenization ---
+chars = list(sentence.lower())
+char_ids = [tokenizer.vocab.get(c, -1) for c in chars]
+ax2 = axes[1]
+colors2 = plt.cm.Pastel1(np.linspace(0, 1, len(chars)))
+for i, (ch, cid, col) in enumerate(zip(chars, char_ids, colors2)):
+    ax2.barh(0, 1, left=i, height=0.5, color=col, edgecolor='gray', lw=0.5)
+    ax2.text(i+0.5, 0, f'{ch}\n({cid})', ha='center', va='center', fontsize=9)
+ax2.set_xlim(0, len(chars)+0.5); ax2.set_ylim(-0.5, 0.6)
+ax2.set_yticks([]); ax2.set_xticks([])
+ax2.set_title(f'[Speech] Character tokenizer: "{sentence}" → {len(chars)} tokens, each character = 1 token', fontsize=11)
+
+# --- Accent-tagged version ---
+sent_acc = f'[EN-US] {sentence}'
+acc_ids  = tokenizer.encode(sent_acc)
+acc_disp = [tokenizer.inv_vocab[i] for i in acc_ids]
+ax3 = axes[2]
+widths = [3.5 if t.startswith('[EN') else 1.0 for t in acc_disp]
+acc_colors_list = ['steelblue' if t.startswith('[EN') else
+                   ('#2196F3' if t in ('<BOS>','<EOS>') else
+                    plt.cm.Pastel1(i/len(acc_disp)))
+                   for i, t in enumerate(acc_disp)]
+x = 0
+for tok, w, col in zip(acc_disp, widths, acc_colors_list):
+    ax3.barh(0, w, left=x, height=0.5, color=col, edgecolor='gray', lw=0.5)
+    fontsize = 8 if len(tok) <= 5 else 7
+    ax3.text(x+w/2, 0, tok, ha='center', va='center', fontsize=fontsize,
+             fontweight='bold' if w > 1 else 'normal')
+    x += w
+ax3.set_xlim(0, x+0.5); ax3.set_ylim(-0.5, 0.6)
+ax3.set_yticks([]); ax3.set_xticks([])
+ax3.set_title(f'[Accent-Tagged Speech] "{sent_acc}" → [EN-US] = SINGLE token (blue), rest = char tokens', fontsize=11)
+
+plt.suptitle('Three Levels of Speech Tokenization', fontsize=13, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+
+================================================================================
+CELL 15 (MARKDOWN)
+================================================================================
+---
+# Part 2: Mel Spectrogram — The Bridge Between Tokens and Audio
+
+After tokenization, TTS must produce a Mel Spectrogram. Let's first understand what a spectrogram looks like, then see how a real trained model (Tacotron 2) connects text tokens to mel frames through an alignment matrix.
+
+<img src="figures/tacotron2_alignment_and_mel.png" title="Tacotron 2: decoder alignment matrix (left) and predicted vs ground-truth mel spectrogram (middle/right)" style="width: 900px;" />
+
+The leftmost panel is the attention alignment matrix from a trained Tacotron 2 model — decoder timestep on the x-axis, input (text) position on the y-axis. The near-diagonal line is exactly the "which frames correspond to which token" alignment problem from Part 1, learned automatically by attention instead of hand-specified. The middle and right panels are the predicted mel spectrogram and the ground-truth mel spectrogram for the same utterance — visually almost identical, which is what the model is trained to achieve.

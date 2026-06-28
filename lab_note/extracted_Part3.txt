@@ -1,0 +1,251 @@
+
+================================================================================
+CELL 16 (CODE)
+================================================================================
+import urllib.request, os
+
+# Download the sample WAV directly
+url = "https://download.pytorch.org/torchaudio/tutorial-assets/Lab41-SRI-VOiCES-src-sp0307-ch127535-sg0042.wav"
+wav_path = "sample_speech.wav"
+
+if not os.path.exists(wav_path):
+    urllib.request.urlretrieve(url, wav_path)
+
+waveform, sample_rate = torchaudio.load(wav_path)
+if sample_rate != 16000:
+    waveform = T.Resample(sample_rate, 16000)(waveform)
+    sample_rate = 16000
+
+mel_tf  = T.MelSpectrogram(sample_rate=16000, n_fft=1024, hop_length=256, n_mels=80)
+mel_spec = mel_tf(waveform[0].unsqueeze(0)).squeeze()
+log_mel  = torch.log(mel_spec + 1e-9)
+
+fig, axes = plt.subplots(2, 1, figsize=(14, 6))
+axes[0].plot(waveform[0].numpy(), linewidth=0.4, color='steelblue')
+axes[0].set_title('Raw Waveform (16,000 samples/sec)'); axes[0].set_xlabel('Sample index')
+
+im = axes[1].imshow(log_mel.numpy(), aspect='auto', origin='lower', cmap='magma')
+axes[1].set_title('Log Mel Spectrogram (80 bins × time frames)')
+axes[1].set_xlabel('Time frames (16ms each)'); axes[1].set_ylabel('Mel frequency bins')
+plt.colorbar(im, ax=axes[1], label='Log Energy')
+plt.tight_layout(); plt.show()
+
+================================================================================
+CELL 17 (MARKDOWN)
+================================================================================
+---
+# Part 3: CTC — Solving the Alignment Problem
+
+## 3.1 Recap: Why Speech Needs This and NLP Doesn't
+
+Part 1 already showed the core issue: a 5-character word might span 200 audio frames, and we don't know in advance which frames belong to which character. An ASR model still has to output *something* at every single frame (e.g. one prediction every 10-20ms) — so somehow a 200-length frame sequence has to turn into a 5-character string.
+
+**Connectionist Temporal Classification** (Graves et al., ICML 2006) solves this with two ideas:
+
+1. **Repeat each character across multiple consecutive frames** — `HHHEEELLLLOOO` is an acceptable way to "spell" `HELLO` across 13 frames.
+2. **Introduce a blank token `ε`** for frames where nothing new is being said yet, or to separate two instances of the same repeated letter (e.g. the double `L` in `HELLO`) so they don't accidentally get merged into one.
+
+## 3.2 The Collapsing Function
+
+Given any raw frame-level output (an "alignment"), CTC defines a deterministic rule to collapse it down to the final text: merge consecutive duplicate characters, then strip out all blanks.
+
+<img src="figures/ctc_collapsing.png" title="CTC collapsing function: merge repeated characters, then remove blank tokens" style="width: 700px;" />
+
+This is exactly why CTC needs blanks at all: without them, the genuinely-doubled `L` in `HELLO` would incorrectly collapse to a single `L` — the same way a single repeated character would. The blank in between (`...L ε L...`) tells the collapsing function "these are two separate occurrences," not one continuation.
+
+## 3.3 Many Alignments, One Answer
+
+The model never commits to a single frame-level alignment during training — there are many different raw outputs that all collapse to the same correct word. CTC's training objective sums the probability over **every** alignment that collapses correctly, not just the most likely one:
+
+$$P_{CTC}(Y \mid X) = \sum_{A \in \mathcal{B}^{-1}(Y)} \prod_{t} p(a_t \mid X)$$
+
+Naively this sum has exponentially many terms — infeasible to enumerate directly. The trick is the same dynamic-programming idea used in HMMs: a forward-backward recursion that computes the sum in $O(T \cdot |Y|)$ time instead.
+
+<img src="figures/ctc_forward_graph.png" title="CTC forward algorithm: dynamic programming graph over (blank, label) states across timesteps, with two valid final nodes" style="width: 700px;" />
+
+Each row alternates between a blank state and a label state; each column is a timestep. A path through this graph from top-left to one of the two bottom-right "final nodes" is one valid alignment. The forward algorithm sums the probability mass over *all* such paths without ever enumerating them individually — this sum, in log space, is exactly the training loss: $\mathcal{L}_{CTC} = -\log P_{CTC}(Y \mid X)$.
+
+We'll now implement the collapsing function and the forward algorithm from scratch, and train a tiny CTC model on a synthetic frame-to-character task so the alignment is something we can inspect directly.
+
+================================================================================
+CELL 18 (CODE)
+================================================================================
+# ── CTC collapsing function, implemented from scratch ──────────────────────
+
+BLANK = '_'  # ε
+
+def ctc_collapse(alignment):
+    """Merge consecutive duplicates, then remove blanks. alignment: list of chars."""
+    merged = []
+    for ch in alignment:
+        if not merged or ch != merged[-1]:
+            merged.append(ch)
+    return ''.join(ch for ch in merged if ch != BLANK)
+
+
+examples = [
+    list('HHEELLLLOO'),
+    list('H_EE_LL_LO'),     # blank separates the two L's correctly
+    list('H_E_L_L_O'),
+    list('HHHHEEEELLLLLLOOOO'),
+]
+
+print('Collapsing function: merge repeats, then strip blanks\n')
+for align in examples:
+    print(f'  {"".join(align):20} -> {ctc_collapse(align)}')
+
+# Show why the blank matters: without separating ε, two L's wrongly become one
+bad_no_blank  = list('HELLLO')     # no blank, can't tell "real double L" from "repeated frame of one L"
+print(f'\n  Ambiguous case: "{"".join(bad_no_blank)}" collapses to "{ctc_collapse(bad_no_blank)}"')
+print('  (3 consecutive L frames could mean one L stretched out, OR two L'+chr(39)+'s back-to-back —')
+print('   the model needs a blank between them whenever the L'+chr(39)+'s are truly separate letters)')
+
+================================================================================
+CELL 19 (MARKDOWN)
+================================================================================
+## 3.4 The Forward Algorithm — Computing $P_{CTC}(Y \mid X)$ Without Enumerating Every Alignment
+
+We build the "extended" label sequence by interleaving blanks: `HELLO` → `ε H ε E ε L ε L ε O ε`. The forward variable $\alpha(t, s)$ is the total probability of all valid partial alignments that reach extended-label position $s$ by frame $t$. Two simple recursions cover every case (whether the current label repeats the previous one or not), and the final answer is just $\alpha(T, S) + \alpha(T, S-1)$ — the two valid final nodes shown in the diagram above.
+
+================================================================================
+CELL 20 (CODE)
+================================================================================
+# ── CTC forward algorithm, implemented from scratch (log-space) ────────────
+import torch
+import numpy as np
+
+NEG_INF = -1e9
+
+def log_add(a, b):
+    """log(exp(a) + exp(b)), numerically stable."""
+    if a == NEG_INF: return b
+    if b == NEG_INF: return a
+    m = max(a, b)
+    return m + np.log(np.exp(a - m) + np.exp(b - m))
+
+
+def ctc_forward_log_prob(log_probs, labels, blank=0):
+    """
+    log_probs: (T, V) log-softmax output per frame, V = vocab size (incl. blank)
+    labels:    list of label indices (no blanks), length L
+    Returns:   log P_CTC(labels | log_probs)
+    """
+    T, V = log_probs.shape
+    L = len(labels)
+    ext = [blank]
+    for lab in labels:
+        ext += [lab, blank]
+    S = len(ext)  # extended length = 2L + 1
+
+    alpha = np.full((T, S), NEG_INF)
+    alpha[0, 0] = log_probs[0, ext[0]]
+    if S > 1:
+        alpha[0, 1] = log_probs[0, ext[1]]
+
+    for t in range(1, T):
+        for s in range(S):
+            stay = alpha[t-1, s]
+            prev = alpha[t-1, s-1] if s - 1 >= 0 else NEG_INF
+            skip = NEG_INF
+            # can skip over a blank only if current label != label two steps back
+            if s - 2 >= 0 and ext[s] != blank and ext[s] != ext[s-2]:
+                skip = alpha[t-1, s-2]
+            best_prev = log_add(log_add(stay, prev), skip)
+            alpha[t, s] = best_prev + log_probs[t, ext[s]]
+
+    if S == 1:
+        return alpha[T-1, S-1]
+    return log_add(alpha[T-1, S-1], alpha[T-1, S-2])
+
+
+# ── Sanity check on a tiny hand-built example ───────────────────────────────
+# vocab: 0=blank, 1=H, 2=E, 3=L, 4=O
+vocab = {0: BLANK, 1: 'H', 2: 'E', 3: 'L', 4: 'O'}
+T, V = 6, 5
+np.random.seed(0)
+logits = np.random.randn(T, V)
+log_probs = logits - np.log(np.exp(logits).sum(axis=1, keepdims=True))  # log-softmax
+
+labels_hel = [1, 2, 3]  # "HEL"
+logp = ctc_forward_log_prob(log_probs, labels_hel)
+print(f'log P_CTC("HEL" | random 6-frame logits) = {logp:.4f}')
+print(f'P_CTC("HEL" | ...) = {np.exp(logp):.6f}')
+print()
+print('This sums the probability over every alignment of length 6 that collapses to "HEL"')
+print('(e.g. H_EL__, HH_ELL, _HEELL, ...) — without enumerating them one by one.')
+
+================================================================================
+CELL 21 (MARKDOWN)
+================================================================================
+## 3.5 Training a Tiny CTC Model on a Synthetic Task
+
+Real ASR training data requires downloading and aligning audio corpora, which is heavy for a single lab cell. Instead we synthesize a toy "frame sequence → word" task that has the *exact same structure* as real ASR: a long, noisy frame sequence where each character is smeared across several consecutive frames at an unknown, variable rate — and a CTC-trained model must learn to read it off correctly. We use PyTorch's built-in `nn.CTCLoss` here (a fast, tested implementation of the same forward algorithm we just built by hand) so training is quick; Exercise 1 below asks you to swap in your own loss and confirm the results match.
+
+================================================================================
+CELL 22 (CODE)
+================================================================================
+# ── Synthetic frame-to-character ASR task + tiny CTC model ─────────────────
+import torch.nn as nn
+import torch.nn.functional as F
+import random
+
+ALPHABET = list('helo wrd')           # small vocab for our toy words
+CHAR2IDX = {c: i+1 for i, c in enumerate(ALPHABET)}   # 0 reserved for blank
+IDX2CHAR = {i+1: c for i, c in enumerate(ALPHABET)}
+VOCAB_SIZE = len(ALPHABET) + 1        # +1 for blank
+N_MELS = 20                           # toy "feature dim" per frame
+
+WORDS = ['hello', 'world', 'hero', 'red', 'led', 'doer']
+
+def synthesize_frames(word, frames_per_char=(3, 8)):
+    """Each character is stretched across a random number of frames + noise."""
+    frames, char_at_frame = [], []
+    for ch in word:
+        n = random.randint(*frames_per_char)
+        base = np.zeros(N_MELS)
+        base[CHAR2IDX[ch] % N_MELS] = 3.0          # a "signature" peak per character
+        for _ in range(n):
+            frames.append(base + np.random.randn(N_MELS) * 0.5)
+            char_at_frame.append(ch)
+    return np.stack(frames), char_at_frame
+
+
+class TinyCTCModel(nn.Module):
+    """BiLSTM encoder -> linear -> log-softmax over (blank + alphabet)."""
+    def __init__(self, in_dim=N_MELS, hidden=64, vocab=VOCAB_SIZE):
+        super().__init__()
+        self.lstm = nn.LSTM(in_dim, hidden, batch_first=True, bidirectional=True)
+        self.fc   = nn.Linear(hidden * 2, vocab)
+
+    def forward(self, x):
+        h, _ = self.lstm(x)
+        return F.log_softmax(self.fc(h), dim=-1)   # (B, T, V)
+
+
+model = TinyCTCModel()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+
+losses = []
+for step in range(300):
+    word = random.choice(WORDS)
+    frames, _ = synthesize_frames(word)
+    x = torch.tensor(frames, dtype=torch.float32).unsqueeze(0)     # (1, T, N_MELS)
+    targets = torch.tensor([CHAR2IDX[c] for c in word], dtype=torch.long)
+
+    log_probs = model(x).transpose(0, 1)   # CTCLoss wants (T, B, V)
+    input_lengths  = torch.tensor([log_probs.size(0)])
+    target_lengths = torch.tensor([len(targets)])
+
+    loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+    optimizer.zero_grad(); loss.backward(); optimizer.step()
+    losses.append(loss.item())
+
+    if (step + 1) % 50 == 0:
+        print(f'Step {step+1:3d} | CTC loss: {np.mean(losses[-50:]):.4f}')
+
+plt.figure(figsize=(8, 4))
+plt.plot(losses)
+plt.title('CTC Training Loss (toy frame-to-character task)')
+plt.xlabel('Step'); plt.ylabel('CTC loss'); plt.grid(True)
+plt.show()

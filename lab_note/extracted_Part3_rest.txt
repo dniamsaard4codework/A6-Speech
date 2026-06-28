@@ -1,0 +1,151 @@
+
+================================================================================
+CELL 22 (CODE)
+================================================================================
+# ── Synthetic frame-to-character ASR task + tiny CTC model ─────────────────
+import torch.nn as nn
+import torch.nn.functional as F
+import random
+
+ALPHABET = list('helo wrd')           # small vocab for our toy words
+CHAR2IDX = {c: i+1 for i, c in enumerate(ALPHABET)}   # 0 reserved for blank
+IDX2CHAR = {i+1: c for i, c in enumerate(ALPHABET)}
+VOCAB_SIZE = len(ALPHABET) + 1        # +1 for blank
+N_MELS = 20                           # toy "feature dim" per frame
+
+WORDS = ['hello', 'world', 'hero', 'red', 'led', 'doer']
+
+def synthesize_frames(word, frames_per_char=(3, 8)):
+    """Each character is stretched across a random number of frames + noise."""
+    frames, char_at_frame = [], []
+    for ch in word:
+        n = random.randint(*frames_per_char)
+        base = np.zeros(N_MELS)
+        base[CHAR2IDX[ch] % N_MELS] = 3.0          # a "signature" peak per character
+        for _ in range(n):
+            frames.append(base + np.random.randn(N_MELS) * 0.5)
+            char_at_frame.append(ch)
+    return np.stack(frames), char_at_frame
+
+
+class TinyCTCModel(nn.Module):
+    """BiLSTM encoder -> linear -> log-softmax over (blank + alphabet)."""
+    def __init__(self, in_dim=N_MELS, hidden=64, vocab=VOCAB_SIZE):
+        super().__init__()
+        self.lstm = nn.LSTM(in_dim, hidden, batch_first=True, bidirectional=True)
+        self.fc   = nn.Linear(hidden * 2, vocab)
+
+    def forward(self, x):
+        h, _ = self.lstm(x)
+        return F.log_softmax(self.fc(h), dim=-1)   # (B, T, V)
+
+
+model = TinyCTCModel()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+
+losses = []
+for step in range(300):
+    word = random.choice(WORDS)
+    frames, _ = synthesize_frames(word)
+    x = torch.tensor(frames, dtype=torch.float32).unsqueeze(0)     # (1, T, N_MELS)
+    targets = torch.tensor([CHAR2IDX[c] for c in word], dtype=torch.long)
+
+    log_probs = model(x).transpose(0, 1)   # CTCLoss wants (T, B, V)
+    input_lengths  = torch.tensor([log_probs.size(0)])
+    target_lengths = torch.tensor([len(targets)])
+
+    loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+    optimizer.zero_grad(); loss.backward(); optimizer.step()
+    losses.append(loss.item())
+
+    if (step + 1) % 50 == 0:
+        print(f'Step {step+1:3d} | CTC loss: {np.mean(losses[-50:]):.4f}')
+
+plt.figure(figsize=(8, 4))
+plt.plot(losses)
+plt.title('CTC Training Loss (toy frame-to-character task)')
+plt.xlabel('Step'); plt.ylabel('CTC loss'); plt.grid(True)
+plt.show()
+
+================================================================================
+CELL 23 (CODE)
+================================================================================
+# ── Greedy decode: see the model's raw alignment + our collapsing function ──
+model.eval()
+fig, axes = plt.subplots(len(WORDS), 1, figsize=(12, 2 * len(WORDS)))
+
+for ax, word in zip(axes, WORDS):
+    frames, true_chars = synthesize_frames(word)
+    x = torch.tensor(frames, dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        log_probs = model(x).squeeze(0)            # (T, V)
+    pred_ids = log_probs.argmax(dim=-1).tolist()
+    pred_chars_raw = [IDX2CHAR.get(i, BLANK) if i != 0 else BLANK for i in pred_ids]
+    decoded = ctc_collapse(pred_chars_raw)          # reuse our from-scratch function!
+
+    T = len(pred_chars_raw)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(ALPHABET) + 1))
+    for t, ch in enumerate(pred_chars_raw):
+        idx = 0 if ch == BLANK else ALPHABET.index(ch) + 1
+        ax.bar(t, 1, color=colors[idx], edgecolor='white', linewidth=0.3)
+        if ch != BLANK:
+            ax.text(t, 0.5, ch, ha='center', va='center', fontsize=8, color='white')
+    ax.set_xlim(0, T); ax.set_ylim(0, 1)
+    ax.set_yticks([]); ax.set_xticks([])
+    correct = 'correct' if decoded == word else 'wrong'
+    ax.set_ylabel(f'"{word}"', rotation=0, labelpad=35, fontsize=10, va='center')
+    ax.set_title(f'Raw greedy output ({T} frames) -> collapsed: "{decoded}"  [{correct}]',
+                 fontsize=9, loc='left')
+
+plt.suptitle('CTC Greedy Decoding: Raw Frame-Level Output -> Collapsed Text', fontsize=13, y=1.0)
+plt.tight_layout()
+plt.show()
+model.train()
+
+================================================================================
+CELL 24 (MARKDOWN)
+================================================================================
+---
+# Part 4: wav2vec 2.0 — Probing a Self-Supervised Speech Encoder
+
+## 4.1 Where This Fits
+
+CTC (Part 3) needs labeled (audio, transcript) pairs to train. Those are expensive — transcribing one hour of audio can take roughly ten hours of human effort. **wav2vec 2.0** (Baevski et al., Meta AI 2020) asks: can a model learn useful speech representations from raw audio *without any transcripts at all*, the same way SSL methods like SimCLR or DINO learn image representations without labels?
+
+<img src="figures/wav2vec2_arch.png" title="wav2vec 2.0: CNN feature extractor -> quantization (Q) for contrastive targets, masked Transformer encoder produces context representations (C)" style="width: 750px;" />
+
+The recipe has three pieces:
+1. **CNN feature extractor**: raw waveform → latent speech representations $\mathcal{Z}$ (one vector per ~20ms).
+2. **Quantization module**: each latent vector is also mapped to a discrete codebook entry $\mathcal{Q}$ — this becomes the *target* for self-supervision, never seen by the encoder directly.
+3. **Masked Transformer**: random spans of $\mathcal{Z}$ are masked before the Transformer; it must predict the *quantized* version of the masked spots, using a **contrastive loss** against a handful of distractor codes.
+
+No transcripts anywhere in this loop. The supervision signal is purely "predict the masked part of your own input" — exactly the same self-supervised philosophy as MAE's masked-patch reconstruction in the SSL lab, just applied to audio frames instead of image patches.
+
+## 4.2 Why We Probe Instead of Pretrain
+
+Pretraining wav2vec 2.0 from scratch takes the kind of unlabeled audio + compute budget well outside a single lab (the original model trained on 960+ hours of LibriSpeech). What we *can* do cheaply, and what tells us just as much about what the model learned: take a **pretrained** checkpoint from Hugging Face, freeze it, and run the exact same **linear probe** evaluation used for SimCLR/DINO/MAE in the SSL lab — freeze the encoder, train only a single linear layer on top with labels, and see how separable the frozen features already are.
+
+```
+Pretrained wav2vec2 (frozen) → context representations C → Linear classifier → class label
+                                                                  ↑ only this is trained with labels
+```
+
+High linear-probe accuracy means the frozen, label-free representations are already close to linearly separable for the task — the same signal we used in the SSL lab to judge SimCLR/DINO/MAE.
+
+================================================================================
+CELL 25 (CODE)
+================================================================================
+# ── Load pretrained wav2vec2 from Hugging Face ──────────────────────────────
+# !pip install -q transformers
+from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
+
+W2V_NAME = 'facebook/wav2vec2-base'
+w2v_extractor = Wav2Vec2FeatureExtractor.from_pretrained(W2V_NAME)
+w2v_model = Wav2Vec2Model.from_pretrained(W2V_NAME).to(device).eval()
+for p in w2v_model.parameters():
+    p.requires_grad = False   # freeze — we only train the linear probe
+
+n_params = sum(p.numel() for p in w2v_model.parameters())
+print(f'Loaded {W2V_NAME} from Hugging Face ({n_params:,} frozen parameters)')
+

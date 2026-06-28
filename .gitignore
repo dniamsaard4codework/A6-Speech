@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ----------------------------------------------------------------------------
+# A6 Speech Processing — project-specific
+# ----------------------------------------------------------------------------
+# Second (voice) environment + cloned upstream repos for OpenVoice / MeloTTS
+.venv-voice/
+third_party/
+
+# Datasets & model caches (large, re-downloadable) — keep the user's reference clip
+data/speechcommands/
+data/voice_clone/processed/
+data/SpeechCommands/
+*.tar.gz
+
+# Generated audio can be large; keep a curated set in outputs/ but ignore scratch
+outputs/scratch/
+
+# uv lockfile is kept (reproducibility); nothing to ignore there

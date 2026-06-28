@@ -1,0 +1,43 @@
+{
+  "text": "I got the job!",
+  "reference": "data/voice_clone/my_voice.wav",
+  "accents": {
+    "us": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_us.wav",
+    "br": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_br.wav",
+    "india": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_india.wav",
+    "au": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_au.wav"
+  },
+  "metrics": {
+    "us": {
+      "duration_s": 1.846,
+      "rms_energy": 0.05981,
+      "mel_centroid_hz": 629.8
+    },
+    "br": {
+      "duration_s": 1.324,
+      "rms_energy": 0.07999,
+      "mel_centroid_hz": 369.3
+    },
+    "india": {
+      "duration_s": 1.8,
+      "rms_energy": 0.03473,
+      "mel_centroid_hz": 250.1
+    },
+    "au": {
+      "duration_s": 1.73,
+      "rms_energy": 0.07555,
+      "mel_centroid_hz": 242.5
+    }
+  },
+  "cosine_sim": {
+    "us": 0.5107,
+    "br": 0.4815,
+    "india": 0.5958,
+    "au": 0.5575
+  },
+  "cross_lingual": {
+    "EN": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_EN.wav",
+    "ES": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_ES.wav",
+    "FR": "C:\\Users\\dniam\\Documents\\Dechathon_N\\AIT\\DL\\A6-Speech\\outputs\\cloned_FR.wav"
+  }
+}

@@ -1,0 +1,40 @@
+[project]
+name = "a6-speech"
+version = "0.1.0"
+description = "DL-AIT Assignment 6 — Speech Processing (Tokenization, CTC, wav2vec2, Voice Cloning) — Dechathon Niamsa-ard [st126235]"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    # --- GPU stack: cu128 wheels required for the RTX 5060 Ti (Blackwell, sm_120) ---
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    # --- numpy held < 2 so the same env can also run OpenVoice/MeloTTS (Exercise 4) ---
+    "numpy==1.26.4",
+    "transformers==4.46.3",
+    "scikit-learn>=1.4",
+    "matplotlib>=3.8",
+    "librosa>=0.10,<0.11",
+    "soundfile>=0.12",
+    "editdistance>=0.8",
+    "huggingface-hub>=0.24,<0.26",
+    "ipykernel>=6.29",
+    "notebook>=7.2",
+    "nbconvert>=7.16",
+]
+
+# Single environment for the whole assignment (Ex 1-4). The voice-cloning extras
+# (OpenVoice V2 + MeloTTS) are installed on top of this env via scripts/setup_voice.ps1
+# + requirements-voice.txt (kept separate only because they are local editable installs).
+
+# --- PyTorch cu128 (CUDA 12.8) index ---
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv]
+package = false

@@ -1,0 +1,396 @@
+
+================================================================================
+CELL 3 (MARKDOWN)
+================================================================================
+---
+# Part 1: Speech Tokenization — Why It's Different from NLP
+
+## 1.1 How NLP Tokenizes Text
+
+In NLP (e.g., BERT, GPT), tokenization is conceptually simple:
+
+```
+"Hello world" → ["Hello", "world"] → [7592, 2088]   # word-level
+"Hello world" → ["He", "llo", "▁world"] → [1544, 7414, 2088]  # BPE (subword)
+```
+
+- **Discrete**: text IS already a sequence of discrete symbols
+- **Fixed vocabulary**: 30,000–50,000 tokens, every token is equally "sized"
+- **No alignment problem**: token boundaries are explicit (spaces, subword splits)
+- **One token = one meaning unit** (roughly)
+
+## 1.2 Why Audio Is Fundamentally Different
+
+Audio is a **continuous** signal sampled at 16,000–44,100 points per second. There are **no natural boundaries** between sounds.
+
+```
+"Hello" spoken aloud:
+→ 32,000 raw sample values (2 seconds at 16kHz)
+→ No spaces, no punctuation, no clear cut points
+→ The same word spoken fast vs slow has VERY different lengths
+```
+
+**The core problem:** How do you tokenize something continuous?
+
+================================================================================
+CELL 4 (CODE)
+================================================================================
+# ── Visualize: NLP token vs Audio signal side by side ──────────────────────
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 4))
+
+# Left: NLP tokenization — discrete, uniform
+ax = axes[0]
+tokens = ['He', '##llo', 'world', '!']
+token_ids = [7592, 7414, 2088, 999]
+colors = ['#4C72B0','#DD8452','#55A868','#C44E52']
+for i, (tok, tid, col) in enumerate(zip(tokens, token_ids, colors)):
+    ax.barh(0, 1, left=i, height=0.5, color=col, edgecolor='white', linewidth=2)
+    ax.text(i + 0.5, 0, f'{tok}\n[{tid}]', ha='center', va='center',
+            fontsize=11, fontweight='bold', color='white')
+ax.set_xlim(0, 4); ax.set_ylim(-0.5, 0.5)
+ax.set_yticks([]); ax.set_xticks([])
+ax.set_title('NLP Tokenization\nDiscrete, uniform, explicit boundaries', fontsize=12)
+ax.set_xlabel('Each bar = 1 token, always the same "size"')
+
+# Right: audio signal — continuous, no boundaries
+ax2 = axes[1]
+t = np.linspace(0, 0.5, 8000)
+# Simulate a rough "Hello" envelope
+signal = (np.sin(2*np.pi*300*t) * np.exp(-10*(t-0.05)**2) * 0.8 +
+          np.sin(2*np.pi*500*t) * np.exp(-15*(t-0.2)**2) * 0.6 +
+          np.sin(2*np.pi*200*t) * np.exp(-20*(t-0.35)**2) * 0.9)
+signal += np.random.randn(len(t)) * 0.05
+ax2.plot(t * 1000, signal, color='steelblue', linewidth=0.5)
+ax2.axvspan(10, 80,   alpha=0.15, color='red',    label='"H"')
+ax2.axvspan(80, 200,  alpha=0.15, color='green',  label='"ell"')
+ax2.axvspan(200,370,  alpha=0.15, color='orange', label='"o"')
+ax2.set_title('Audio Signal ("Hello" spoken)\nContinuous, no explicit boundaries', fontsize=12)
+ax2.set_xlabel('Time (ms)'); ax2.set_ylabel('Amplitude')
+ax2.legend(loc='upper right', fontsize=9)
+ax2.text(45,  0.9, '"H"?',  ha='center', fontsize=10, color='red')
+ax2.text(140, 0.9, '"ell"?', ha='center', fontsize=10, color='green')
+ax2.text(285, 0.9, '"o"?',  ha='center', fontsize=10, color='orange')
+
+plt.suptitle('NLP vs Speech: The Tokenization Problem', fontsize=14, fontweight='bold')
+plt.tight_layout(); plt.show()
+
+print('Key difference:')
+print('NLP  → text already IS tokens → just look up in vocabulary')
+print('Audio → must DECIDE where tokens are → no obvious boundaries')
+
+================================================================================
+CELL 5 (MARKDOWN)
+================================================================================
+## 1.3 The Three Approaches to Speech Tokenization
+
+Because audio has no natural token boundaries, researchers invented three different strategies:
+
+### Approach 1: Character/Grapheme Tokens (Tacotron style)
+Tokenize the **text input** as characters: `H e l l o → [H][e][l][l][o]`.
+The model learns to map each character to a variable-length stretch of audio frames.
+
+**Problem:** Same character sounds different in different words. `c` in `cat` vs `ceiling` — completely different sounds!
+
+### Approach 2: Phoneme Tokens
+Convert text to **phonemes** — the minimal units of sound: `Hello → HH EH L OW`.
+Each phoneme is a distinct sound unit with a defined pronunciation.
+
+**Advantage:** Pronunciation is explicit. `c` in `cat` → `K`, `c` in `ceiling` → `S`.
+**Problem:** Need a g2p (grapheme-to-phoneme) converter. Different for every language.
+
+### Approach 3: Acoustic Tokens (Codec-based, modern)
+Compress the **audio itself** into discrete tokens using a neural codec (e.g., EnCodec, SoundStream).
+Audio frames → VQ-VAE codebook → discrete token IDs.
+
+**Advantage:** Language models (like GPT) can directly predict audio tokens — no separate vocoder needed.
+**Used in:** VALL-E, AudioLM, SoundStorm.
+
+The key insight: in all approaches, there is an **alignment problem** that NLP doesn't have.
+
+================================================================================
+CELL 6 (CODE)
+================================================================================
+import nltk
+nltk.download('averaged_perceptron_tagger_eng')
+
+================================================================================
+CELL 7 (CODE)
+================================================================================
+# ── Demonstrate the three tokenization approaches ──────────────────────────
+
+text = "Hello world"
+print('='*60)
+print(f'Input text: "{text}"')
+print('='*60)
+
+# --- Approach 1: Character tokens ---
+char_vocab = {c: i for i, c in enumerate(sorted(set(" abcdefghijklmnopqrstuvwxyz".upper())))
+              }
+char_tokens = list(text.upper())
+char_ids    = [char_vocab.get(c, -1) for c in char_tokens]
+print(f'\n[Approach 1] Character tokens:')
+print(f'  Tokens: {char_tokens}')
+print(f'  IDs:    {char_ids}')
+print(f'  Length: {len(char_tokens)} tokens')
+print(f'  Problem: "C" in cat vs ceiling = same token, different sound!')
+
+# --- Approach 2: Phoneme tokens (using g2p_en) ---
+# !pip install g2p_en
+try:
+    from g2p_en import G2p
+    g2p = G2p()
+    phonemes = g2p(text)
+    phonemes = [p for p in phonemes if p != ' ']
+    print(f'\n[Approach 2] Phoneme tokens:')
+    print(f'  Phonemes: {phonemes}')
+    print(f'  Length:   {len(phonemes)} phonemes')
+    print(f'  Each symbol = one unique sound (ARPAbet standard)')
+
+    # Compare: cat vs ceiling — same 'c', different phonemes
+    print(f'\n  Contrast: "cat"     → {g2p("cat")}')
+    print(f'            "ceiling" → {g2p("ceiling")}')
+    print(f'  → Same letter C, completely different phonemes!')
+except ImportError:
+    print(f'\n[Approach 2] Phoneme tokens (install g2p_en to run):')
+    print(f'  "Hello world" → [HH EH L OW W ER L D]')
+    print(f'  "cat"     → [K AE T]  vs  "ceiling" → [S IY L IH NG]')
+    print(f'  → Same letter C, different phonemes!')
+
+# --- Approach 3: Acoustic tokens (conceptual demo) ---
+print(f'\n[Approach 3] Acoustic tokens (codec-based):')
+print(f'  Audio waveform → EnCodec/SoundStream (VQ-VAE) → discrete codes')
+print(f'  e.g., 24kHz audio → 75 tokens/sec (at 320 hop) × 8 codebooks')
+print(f'  "Hello world" (1s) → ~75 primary tokens + 75×7 refinement tokens')
+print(f'  Can be modeled by a language model (VALL-E, AudioLM)')
+print(f'  No pronunciation dictionary needed — works for any language/sound')
+print(f'  Tradeoff: very long sequences — 1s audio = 600 tokens total (vs 2 words in NLP)')
+
+================================================================================
+CELL 8 (MARKDOWN)
+================================================================================
+## 1.4 The Alignment Problem — Why Speech Has CTC and NLP Doesn't
+
+Even after choosing a tokenization approach, there's still the **alignment problem**:
+
+```
+Text:  H  E  L  L  O        ← 5 tokens
+Audio: ████████████████████  ← 200 frames
+
+Which frames correspond to which token?
+```
+
+In NLP, the input and output are both token sequences of similar length — no alignment needed. In speech, the input (audio frames) and output (text tokens) have very different lengths.
+
+**CTC (Connectionist Temporal Classification)** solves this by:
+- Allowing the model to output a special `<blank>` token for "nothing here yet"
+- Summing over all valid alignments that collapse to the correct text
+- Example: `_H_EE_LL_O_` and `HH_E_L_LO` both collapse to `HELLO`
+
+================================================================================
+CELL 9 (CODE)
+================================================================================
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(2, 1, figsize=(14, 6))
+
+ax = axes[0]
+nlp_tokens = ['The', 'cat', 'sat']
+colors_nlp = ['#4C72B0', '#DD8452', '#55A868']
+
+for i, (tok, col) in enumerate(zip(nlp_tokens, colors_nlp)):
+    ax.barh(1, 3, left=i*3, height=0.4, color=col, alpha=0.8)
+    ax.text(i*3+1.5, 1, tok, ha='center', va='center',
+            fontsize=12, color='white', fontweight='bold')
+    ax.barh(0, 3, left=i*3, height=0.4, color=col, alpha=0.8)
+    ax.text(i*3+1.5, 0, tok, ha='center', va='center',
+            fontsize=12, color='white', fontweight='bold')
+    ax.annotate('',
+                xy=(i*3+1.5, 0.2),
+                xytext=(i*3+1.5, 0.8),
+                arrowprops=dict(arrowstyle='->', color='black', lw=1.5))
+
+ax.set_xlim(0, 9)
+ax.set_ylim(-0.3, 1.7)
+ax.set_yticks([0, 1])
+ax.set_yticklabels(['Output\n(tokens)', 'Input\n(tokens)'])
+ax.set_xticks([])
+ax.set_title('NLP: Input & Output are both token sequences — alignment is trivial',
+             fontsize=11)
+
+ax2 = axes[1]
+n_audio_frames = 20
+text_tokens = ['H', 'E', 'L', 'L', 'O']
+
+frame_colors = (['#4C72B0']*4 + ['#DD8452']*4 + ['#55A868']*4 +
+                ['#C44E52']*4 + ['#9467BD']*4)
+token_colors = ['#4C72B0', '#DD8452', '#55A868', '#C44E52', '#9467BD']
+
+for i in range(n_audio_frames):
+    ax2.barh(1, 1, left=i, height=0.4,
+             color=frame_colors[i], alpha=0.8, edgecolor='white')
+
+for i, (tok, col) in enumerate(zip(text_tokens, token_colors)):
+    ax2.barh(0, 1.5, left=i*1.5, height=0.4, color=col, alpha=0.8)
+    ax2.text(i*1.5+0.75, 0, tok, ha='center', va='center',
+             fontsize=12, color='white', fontweight='bold')
+
+    mid_frame = i*4 + 2
+
+    ax2.annotate('',
+                 xy=(i*1.5+0.75, 0.2),
+                 xytext=(mid_frame, 0.8),
+                 arrowprops=dict(
+                     arrowstyle='->',
+                     color='gray',
+                     lw=1,
+                     connectionstyle='arc3,rad=0.3'
+                 ))
+
+ax2.set_xlim(0, 20)
+ax2.set_ylim(-0.3, 1.7)
+ax2.set_yticks([0, 1])
+ax2.set_yticklabels(['Output\n(5 tokens)', 'Input\n(20 frames)'])
+ax2.set_xticks([])
+ax2.set_title(
+    'Speech: Input (audio frames) vs Output (text tokens) have different lengths → CTC needed',
+    fontsize=11)
+
+plt.suptitle('The Alignment Problem: Why Speech Needs CTC and NLP Does Not',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+================================================================================
+CELL 10 (MARKDOWN)
+================================================================================
+## 1.5 How TTS Tokenizes: The Full Pipeline
+
+For TTS (Text-to-Speech), the tokenization flows in the opposite direction:
+
+```
+"Hello world"
+      ↓  [Text Normalization]
+"hello world"  (expand numbers, abbreviations: "Dr." → "Doctor", "5" → "five")
+      ↓  [G2P / Character Encoding]
+[HH, EH, L, OW, W, ER, L, D]  (phonemes OR characters)
+      ↓  [Token Embedding]
+Sequence of 512-dim vectors
+      ↓  [Tacotron / FastSpeech encoder-decoder]
+Mel Spectrogram  (80 bins × T frames)   ← the "image" of speech
+      ↓  [Vocoder: WaveNet / HiFi-GAN]
+Audio waveform  (16,000 samples/sec)
+```
+
+The **duration problem**: each input token must be stretched to cover a variable number of output frames. "Hello" takes ~200ms but "Supercalifragilistic" takes ~800ms.
+
+- **Tacotron**: learns duration implicitly via attention (soft, flexible, but sometimes skips tokens)
+- **FastSpeech**: learns duration explicitly via a duration predictor (more stable, fully parallel)
+
+================================================================================
+CELL 11 (CODE)
+================================================================================
+# ── Build a character-level tokenizer from scratch ──────────────────────────
+
+class SpeechTokenizer:
+    """
+    Character-level tokenizer for TTS.
+    Handles: text normalization, special tokens, accent tags.
+    """
+    ACCENTS = ['[EN-US]', '[EN-BR]', '[EN-INDIA]', '[EN-AU]', '[EN-DEFAULT]']
+
+    def __init__(self):
+        # Base vocabulary: printable ASCII
+        chars = " !',-.?abcdefghijklmnopqrstuvwxyz"
+        self.vocab = {c: i+3 for i, c in enumerate(chars)}
+        self.vocab['<PAD>'] = 0
+        self.vocab['<BOS>'] = 1
+        self.vocab['<EOS>'] = 2
+        # Add accent tag tokens
+        for i, a in enumerate(self.ACCENTS):
+            self.vocab[a] = len(self.vocab)
+        self.inv_vocab = {v: k for k, v in self.vocab.items()}
+
+    def normalize(self, text):
+        """Basic text normalization: lowercase, expand common abbreviations."""
+        text = text.lower()
+        text = re.sub(r'dr\.', 'doctor', text)
+        text = re.sub(r'mr\.', 'mister', text)
+        text = re.sub(r'(\d+)', lambda m: self._num_to_words(int(m.group())), text)
+        text = re.sub(r'[^a-z !\',\-.?\[\]]', '', text)
+        return text.strip()
+
+    def _num_to_words(self, n):
+        words = {0:'zero',1:'one',2:'two',3:'three',4:'four',5:'five',
+                 6:'six',7:'seven',8:'eight',9:'nine',10:'ten'}
+        return words.get(n, str(n))
+
+    def encode(self, text, add_special=True):
+        """
+        Tokenize text (with optional accent tags).
+        Accent tags like [EN-US] are treated as single tokens, not character-by-character.
+        """
+        tag_pattern = '|'.join(re.escape(a) for a in self.ACCENTS)
+        parts = re.split(f'({tag_pattern})', text)
+        tokens = []
+        if add_special: tokens.append(self.vocab['<BOS>'])
+        for part in parts:
+            if part in self.ACCENTS:
+                tokens.append(self.vocab[part])  # accent tag = single token
+            else:
+                normalized = self.normalize(part)
+                for ch in normalized:
+                    if ch in self.vocab:
+                        tokens.append(self.vocab[ch])
+        if add_special: tokens.append(self.vocab['<EOS>'])
+        return tokens
+
+    def decode(self, ids):
+        return ''.join(self.inv_vocab.get(i, '?') for i in ids
+                       if i not in (self.vocab['<PAD>'], self.vocab['<BOS>'], self.vocab['<EOS>']))
+
+    def __len__(self): return len(self.vocab)
+
+
+tokenizer = SpeechTokenizer()
+print(f'Vocabulary size: {len(tokenizer)}')
+print(f'Special tokens: PAD={tokenizer.vocab["<PAD>"]}, BOS={tokenizer.vocab["<BOS>"]}, EOS={tokenizer.vocab["<EOS>"]}')
+print(f'Accent tokens: {[(a, tokenizer.vocab[a]) for a in SpeechTokenizer.ACCENTS]}')
+
+
+================================================================================
+CELL 12 (CODE)
+================================================================================
+# ── Demonstrate tokenization: NLP vs Speech ─────────────────────────────────
+
+test_sentences = [
+    "Hello world",
+    "Dr. Smith saw 5 patients.",
+    "[EN-US] This is American English.",
+    "[EN-BR] This is British English.",
+    "[EN-INDIA] This is Indian English.",
+]
+
+print('=' * 65)
+print(f'{"Input":35} {"Tokens":6} {"Accent Tag"}')
+print('=' * 65)
+for sent in test_sentences:
+    ids   = tokenizer.encode(sent)
+    back  = tokenizer.decode(ids)
+    tag   = [a for a in SpeechTokenizer.ACCENTS if a in sent]
+    print(f'{sent[:33]:35} {len(ids):6}  {tag[0] if tag else "—"}')
+
+print('\n--- Detail: "[EN-US] Hello world" ---')
+sent = "[EN-US] Hello world"
+ids = tokenizer.encode(sent)
+print(f'Input:   {sent}')
+print(f'IDs:     {ids}')
+print(f'Decoded: {tokenizer.decode(ids)}')
+print(f'\nKey: [EN-US] = single token ID {tokenizer.vocab["[EN-US]"]} (not [, E, N, -, U, S, ])')
+print(f'     Just like [CLS] in BERT — one special token = one embedding')
+
+
+================================================================================
+CELL 13 (MARKDOWN)
+================================================================================
+## 1.6 NLP Tokenizer vs Speech Tokenizer — Side-by-Side Comparison
