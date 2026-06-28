@@ -135,6 +135,44 @@ cloning (EN/ES/FR) reuses the *same* embedding.
 > Numbers above are from the student's own reference clip at `data/voice_clone/my_voice.wav`
 > (~47 s). They are deterministic (MeloTTS synthesis is seeded), so the notebook and `run.py` agree.
 
+## Exercise answers (every sub-question)
+
+These are the written answers for every question in the assignment; the same text appears inline in [A6_Speech_Processing.ipynb](A6_Speech_Processing.ipynb).
+
+### Exercise 1 — Speech vs NLP Tokenization
+
+**1(a)** — see the *character vs token counts* table above. Each accent tag is **one** token (IDs 36/37/38), and `"Dr. Smith prescribed 10 tablets."` normalizes to `"doctor smith prescribed ten tablets."`, which is why its character count (36) exceeds its raw length.
+
+**1(b) — why is normalizing `"Dr." → "doctor"` critical for TTS?** A TTS model converts **written symbols into sound**; it was never taught that the glyphs `D`,`r`,`.` are *pronounced* "doctor". Left as-is it would either spell it out letter-by-letter ("dee-arr") or, worse, treat the `.` as an end-of-utterance marker and curtail the prosody. The same applies to `10` (it must say "ten", not "one-zero"). Normalization is the **front-end that guarantees the acoustic model only ever receives pronounceable, fully-expanded tokens** — without it the audio is wrong or truncated.
+
+**1(c) — architectural similarity between `[CLS]` and an accent tag `[EN-US]`.** Both are **a single discrete token injected into the sequence that conditions the entire output through self-attention**. In BERT every position attends to `[CLS]`; in TTS, because attention is all-to-all, **every** downstream character/frame can attend to the `[EN-US]` token, so that one vector shifts pronunciation, rhythm and intonation across the *whole* utterance. One token, global influence — a small fixed-size "control knob" wired into every output position by attention.
+
+### Exercise 2 — CTC
+
+**2(a)** — the three hand-built alignments (`hel_lo`, `hheell_lloo`, `_hhh_eee_lll_lll_ooo_`) **all collapse to `hello`**. Each keeps a **blank between the two `l`s** — without it the repeated `l`s would merge into one (`helo`), which is exactly why CTC needs the blank token.
+
+**2(b)** — on the *same* random `log_probs` matrix, `P_CTC("hel") ≠ P_CTC("leh")`. The forward algorithm sums over all frame-alignments consistent with the label **order**; since the random per-frame distribution favours different characters at different times, the two orderings accumulate different total alignment mass. Same letters, different order ⇒ different probability.
+
+**2(c)** — training the toy BiLSTM+CTC, the mean **character error rate first drops below 10% at step 66** (and continues to ~3%). The notebook plots **train vs. validation CTC loss** and the CER-vs-step curve.
+
+**2(d) — shorter durations `(1,2)` vs `(3,8)`: accuracy gets *better* (≈98% vs ≈83%).** The per-word breakdown shows the only hard word is the doubled-letter **`hello`** (~12% correct at `(3,8)`, every other word ~100%). With long per-character durations the model emits a long unbroken run of `l` across *both* l's and — having "agreed" on `l` for so many frames — often never emits the **separating blank**, so greedy collapse merges `ll`→`l` (`hello`→`helo`). Shortening each character to 1–2 frames shortens those runs, the separating blank survives, and `hello` jumps to ~89%. (The usual "fewer frames = less redundancy" penalty is negligible here because the synthetic peaks are high-SNR, so the doubled-letter effect dominates.)
+
+### Exercise 3 — wav2vec 2.0
+
+**3(a)** — Raw mel-spectrogram (mean-pooled) **68.8%** vs wav2vec2 (frozen, mean-pooled) **89.6%** (4-way, random 25%).
+
+**3(b) — how much does wav2vec2 buy you?** About **+20.8 points** over the raw-feature baseline. That is the *same order of magnitude* as the gap in the SSL image lab between an MLP-on-raw-pixels baseline and a pretrained SSL encoder (SimCLR/DINO/MAE) — both are roughly a 15–25 point jump from "hand-crafted features → learned self-supervised features". Self-supervision buys a comparable amount of linear separability in speech as it does in vision.
+
+**3(c) — does accuracy drop with 6 classes?** wav2vec2 goes 89.6% → **79.2%** (drop ~10 points), while the raw-mel baseline falls 68.8% → **51.4%**. The wav2vec2 drop is **not** proportional to the 50% increase in classes and stays **far** above the new random baseline (16.7%) — it degrades gracefully, and its advantage actually *widens* to ~+28 points.
+
+**3(d) — contrastive (wav2vec2) vs reconstruction (MAE).** Both transfer strongly to a task neither was trained for, so on this evidence neither inductive bias is a clear universal winner — each yields a large, comparable linear-probe gain in its own modality. The comparison is **not strictly fair**: the modalities, data scale and architectures differ (1-D audio with a quantized contrastive target vs 2-D image patches with pixel reconstruction), so "which bias is better" is confounded by "which representation is easier to linearly separate". What transfers cleanly across both labs is the higher-level recipe — *pretrain a big encoder self-supervised, then probe it frozen* — rather than one specific loss.
+
+### Exercise 4 — Voice Cloning
+
+**4(a)** — see the *4-accent metrics* table above (duration / RMS energy / mel spectral centroid for `us`, `br`, `india`, `au`), measured on clips cloned from the student's own 47-second recording.
+
+**4(b) — listening + cosine similarity.** Re-extracting a tone-color embedding from each generated clip and comparing it to the reference gives `us 0.511, br 0.482, india 0.596, au 0.558`. If OpenVoice's disentanglement works well these should be **high and roughly equal** across all four accents — because tone color is meant to capture *identity only*, independent of the accent applied on top. The observed values are clustered (~0.48–0.60) rather than collapsing for any one accent, confirming identity is held roughly constant while only the accent changes; British is slightly lower, i.e. a little style leakage into identity. (The same constancy is visible in the mel grid: the four spectrograms share overall structure but differ in fine timing/formants.)
+
 ## Visualizations
 
 **1. Tokenization comparison — NLP tokens vs speech chars vs accent token (Part 1)**
@@ -156,9 +194,34 @@ Linear-probe training curves (train vs. validation loss, validation accuracy per
 ![probe comparison 4-way](figures/ex3_probe_comparison_4way.png)
 ![t-SNE of wav2vec2 embeddings](figures/ex3_tsne_4way.png)
 
-**4. Mel spectrogram grid: same cloned voice across 4 accents (Part 5.4)**
+**4. Voice cloning (Part 5 / Ex 4)**
+
+The student's own ~47-second reference recording (`data/voice_clone/my_voice.wav`), shown as waveform + log-mel:
+
+![reference voice waveform and mel](figures/ex4_reference_voice.png)
+
+Same cloned voice across 4 accents — tone color held constant (Part 5.4):
 
 ![mel grid across accents](figures/ex4_mel_grid_accents.png)
+
+## Audio outputs
+
+The notebook embeds playable audio for the reference, the 4 cloned accents, and the 3 cross-lingual
+clips. GitHub's notebook viewer does **not** render audio widgets — open the notebook in **Jupyter or
+VS Code** to play them, or play the committed `.wav` files directly:
+
+| Clip | File |
+|---|---|
+| Your reference voice (47 s) | [data/voice_clone/my_voice.wav](data/voice_clone/my_voice.wav) |
+| Cloned — US accent | [outputs/cloned_us.wav](outputs/cloned_us.wav) |
+| Cloned — British accent | [outputs/cloned_br.wav](outputs/cloned_br.wav) |
+| Cloned — Indian accent | [outputs/cloned_india.wav](outputs/cloned_india.wav) |
+| Cloned — Australian accent | [outputs/cloned_au.wav](outputs/cloned_au.wav) |
+| Cross-lingual — English | [outputs/cloned_EN.wav](outputs/cloned_EN.wav) |
+| Cross-lingual — Spanish | [outputs/cloned_ES.wav](outputs/cloned_ES.wav) |
+| Cross-lingual — French | [outputs/cloned_FR.wav](outputs/cloned_FR.wav) |
+
+(The `outputs/base_*.wav` files are the MeloTTS base-speaker audio *before* conversion, for comparison.)
 
 ## Discussion
 
