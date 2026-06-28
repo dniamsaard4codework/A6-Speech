@@ -300,6 +300,52 @@ def plot_mel_grid(clip_paths, save_path=None):
     return fig
 
 
+def plot_reference_vs_cloned(reference_path, clip_paths, save_path=None):
+    """Waveform + log-mel of the reference voice and each PROCESSED (cloned) accent clip,
+    so the cloned output is visible even without audio playback."""
+    import matplotlib.pyplot as plt
+    import soundfile as sf
+    import torch
+    import torchaudio.transforms as T
+
+    colors = {"us": "purple", "br": "teal", "india": "royalblue", "au": "darkorange"}
+    rows = [("Reference (your voice)", str(reference_path), "steelblue")]
+    rows += [(f"Cloned -> {a.upper()}", clip_paths[a], colors.get(a, "black"))
+             for a in clip_paths]
+    mel_tf = T.MelSpectrogram(sample_rate=22050, n_fft=1024, hop_length=256, n_mels=80)
+    fig, axes = plt.subplots(len(rows), 2, figsize=(14, 2.0 * len(rows)),
+                             gridspec_kw={"width_ratios": [1.4, 1]})
+    for r, (label, path, color) in enumerate(rows):
+        y, sr = sf.read(str(path))
+        if y.ndim > 1:
+            y = y.mean(1)
+        dur = len(y) / sr
+        axes[r, 0].plot(np.linspace(0, dur, len(y)), y, lw=0.4, color=color)
+        axes[r, 0].set_ylabel(label, rotation=0, ha="right", va="center", fontsize=9)
+        axes[r, 0].set_yticks([])
+        axes[r, 0].set_xlim(0, dur)
+        if r == 0:
+            axes[r, 0].set_title("Waveform")
+        if r == len(rows) - 1:
+            axes[r, 0].set_xlabel("seconds")
+        yr = torch.tensor(y).float().unsqueeze(0)
+        if sr != 22050:
+            yr = T.Resample(sr, 22050)(yr)
+        mel = torch.log(mel_tf(yr).squeeze(0) + 1e-9)
+        axes[r, 1].imshow(mel.numpy(), aspect="auto", origin="lower", cmap="magma")
+        axes[r, 1].set_yticks([])
+        axes[r, 1].set_xticks([])
+        if r == 0:
+            axes[r, 1].set_title("Log-mel spectrogram")
+    fig.suptitle("Reference voice vs. processed (cloned) voice across accents",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    if save_path:
+        fig.savefig(save_path, dpi=130, bbox_inches="tight")
+        print(f"saved {save_path}")
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Full Exercise-4 pipeline
 # ---------------------------------------------------------------------------

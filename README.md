@@ -204,6 +204,11 @@ Same cloned voice across 4 accents — tone color held constant (Part 5.4):
 
 ![mel grid across accents](figures/ex4_mel_grid_accents.png)
 
+The **processed (cloned) voice** — your reference (top) vs. your voice rendered in each accent,
+as waveform + log-mel (so the cloned output is visible without audio playback):
+
+![reference vs cloned voice](figures/ex4_reference_vs_cloned.png)
+
 ## Audio outputs
 
 The notebook embeds playable audio for the reference, the 4 cloned accents, and the 3 cross-lingual
