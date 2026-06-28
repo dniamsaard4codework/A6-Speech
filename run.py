@@ -23,9 +23,9 @@ Examples (exactly the commands from A6_Assignment.md)
     # Cross-lingual cloning
     python run.py --model voice-clone --language es --text "Hola, como estas?" --generate
 
-Note: `ctc` and `wav2vec2-probe` use the main cu128 (GPU) env (.venv).
-      `voice-clone` requires the dedicated voice env (.venv-voice) where OpenVoice + MeloTTS
-      are installed (CPU torch). See README.md.
+Note: every command runs in the single project env (.venv, Python 3.10, PyTorch cu128 on the
+      GPU). voice-clone uses OpenVoice V2 + MeloTTS (installed via scripts/setup.ps1). A bare
+      --reference filename (e.g. my_voice.wav) is resolved under data/voice_clone/. See README.md.
 """
 from __future__ import annotations
 
@@ -91,6 +91,20 @@ def cmd_probe(args):
         probe.run_probe(words, n_per_class=args.n_per_class, figure_dir=FIGURE_DIR, tag=tag)
 
 
+def _resolve_reference(ref):
+    """Resolve a reference clip path: use it if it exists, else look under data/voice_clone/."""
+    from a6_speech.utils import DATA_DIR
+
+    ref = ref or "data/voice_clone/my_voice.wav"
+    p = Path(ref)
+    if p.exists():
+        return str(p)
+    alt = DATA_DIR / "voice_clone" / p.name
+    if alt.exists():
+        return str(alt)
+    return str(ref)  # let the downstream loader raise a clear error
+
+
 def cmd_voice(args):
     from a6_speech import voice_clone as vc
     from a6_speech.utils import LOG_DIR, OUTPUT_DIR, Tee
@@ -100,8 +114,7 @@ def cmd_voice(args):
     with Tee(LOG_DIR / "voice_clone.log", mode="a"):
         print(f"voice-clone | device={device}")
         if args.extract_se:
-            ref = args.reference or "data/voice_clone/my_voice.wav"
-            vc.extract_se(ref, device=device)
+            vc.extract_se(_resolve_reference(args.reference), device=device)
             return
 
         if args.generate:
@@ -109,8 +122,7 @@ def cmd_voice(args):
 
             # --accent all runs the complete Ex4 pipeline and extracts the SE itself.
             if args.accent == "all":
-                vc.run_full(args.reference or "data/voice_clone/my_voice.wav",
-                            text=text, device=device)
+                vc.run_full(_resolve_reference(args.reference), text=text, device=device)
                 return
 
             # Single accent / language need a previously-extracted tone color.
